@@ -1,0 +1,105 @@
+name: Deploy to Vercel after domain A record resolves
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Wait for DNS and deploy production
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      DEPLOY_DOMAIN: ubertradies.online
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Skip while the repository has no project source
+        id: source
+        shell: bash
+        run: |
+          if git ls-files | grep -Ev '^(\.github/|README[^/]*$|LICENSE[^/]*$|\.gitignore$|\.gitattributes$|\.editorconfig$)' | grep -q .; then
+            echo "has_project=true" >> "$GITHUB_OUTPUT"
+            echo "Project files found; continuing." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "has_project=false" >> "$GITHUB_OUTPUT"
+            echo "No project source files are present yet; deployment skipped." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up Node.js
+        if: steps.source.outputs.has_project == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Wait up to 30 minutes for a root A record
+        if: steps.source.outputs.has_project == 'true'
+        shell: bash
+        run: |
+          node <<'NODE'
+          const dns = require('node:dns').promises;
+          const domain = process.env.DEPLOY_DOMAIN;
+          const deadline = Date.now() + 30 * 60 * 1000;
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+          (async () => {
+            while (Date.now() < deadline) {
+              try {
+                const addresses = await dns.resolve4(domain);
+                if (addresses.length > 0) {
+                  console.log(`Root A record found for ${domain}: ${addresses.join(', ')}`);
+                  return;
+                }
+              } catch (error) {
+                if (!['ENODATA', 'ENOTFOUND', 'ESERVFAIL', 'ETIMEOUT', 'EREFUSED'].includes(error.code)) {
+                  console.error(`Unexpected DNS lookup error: ${error.message}`);
+                  process.exit(1);
+                }
+                console.log(`${domain} has no usable A answer yet (${error.code}); retrying in 60 seconds.`);
+              }
+              await sleep(60_000);
+            }
+            console.error(`Timed out waiting for an A record for ${domain} after 30 minutes.`);
+            process.exit(1);
+          })();
+          NODE
+
+      - name: Verify Vercel credentials are configured
+        if: steps.source.outputs.has_project == 'true'
+        shell: bash
+        run: |
+          for key in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
+            if [[ -z "${!key}" ]]; then
+              echo "::error::Missing required GitHub Actions secret: ${key}"
+              exit 1
+            fi
+          done
+
+      - name: Install Vercel CLI
+        if: steps.source.outputs.has_project == 'true'
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel production settings
+        if: steps.source.outputs.has_project == 'true'
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build for production
+        if: steps.source.outputs.has_project == 'true'
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy prebuilt output to Vercel production
+        if: steps.source.outputs.has_project == 'true'
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
