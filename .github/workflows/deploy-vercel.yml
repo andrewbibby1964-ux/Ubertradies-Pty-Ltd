@@ -31,7 +31,7 @@ jobs:
         id: source
         shell: bash
         run: |
-          if git ls-files | grep -Ev '^(\.github/|README[^/]*$|LICENSE[^/]*$|\.gitignore$|\.gitattributes$|\.editorconfig$)' | grep -q .; then
+          if git ls-files | grep -Ev '^(\.github/|scripts/check_ubertradies_dns\.py$|README[^/]*$|LICENSE[^/]*$|\.gitignore$|\.gitattributes$|\.editorconfig$)' | grep -q .; then
             echo "has_project=true" >> "$GITHUB_OUTPUT"
             echo "Project files found; continuing." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -45,39 +45,15 @@ jobs:
         with:
           node-version: 20
 
-      - name: Wait up to 30 minutes for a root A record
+      - name: Set up Python
         if: steps.source.outputs.has_project == 'true'
-        shell: bash
-        run: |
-          node <<'NODE'
-          const dns = require('node:dns').promises;
-          const domain = process.env.DEPLOY_DOMAIN;
-          const expected = ['76.76.21.21'];
-          const deadline = Date.now() + 30 * 60 * 1000;
-          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-          (async () => {
-            while (Date.now() < deadline) {
-              try {
-                const addresses = [...new Set(await dns.resolve4(domain))].sort();
-                if (JSON.stringify(addresses) === JSON.stringify(expected)) {
-                  console.log(`Exact root A-record set matched for ${domain}: ${addresses.join(', ')}`);
-                  return;
-                }
-                console.log(`A records for ${domain} are [${addresses.join(', ')}]; expected exactly [${expected.join(', ')}]. Retrying in 60 seconds.`);
-              } catch (error) {
-                if (!['ENODATA', 'ENOTFOUND', 'ESERVFAIL', 'ETIMEOUT', 'EREFUSED'].includes(error.code)) {
-                  console.error(`Unexpected DNS lookup error: ${error.message}`);
-                  process.exit(1);
-                }
-                console.log(`${domain} has no usable A answer yet (${error.code}); retrying in 60 seconds.`);
-              }
-              await sleep(60_000);
-            }
-            console.error(`Timed out waiting for ${domain} A records to equal exactly [${expected.join(', ')}] after 30 minutes.`);
-            process.exit(1);
-          })();
-          NODE
+      - name: Wait for exact Vercel A record
+        if: steps.source.outputs.has_project == 'true'
+        run: python3 scripts/check_ubertradies_dns.py --watch --interval 60 --timeout 1800
 
       - name: Verify Vercel credentials are configured
         if: steps.source.outputs.has_project == 'true'
