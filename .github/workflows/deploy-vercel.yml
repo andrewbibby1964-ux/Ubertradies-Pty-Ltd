@@ -103,3 +103,66 @@ jobs:
       - name: Deploy prebuilt output to Vercel production
         if: steps.source.outputs.has_project == 'true'
         run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+
+  notify:
+    name: Notify on DNS or deployment failure
+    needs: deploy
+    if: failure()
+    runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      ALERT_FROM: ${{ secrets.ALERT_FROM }}
+      ALERT_TO: ${{ secrets.ALERT_TO }}
+      ALERT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      ALERT_DOMAIN: ubertradies.online
+
+    steps:
+      - name: Send Slack alert if configured
+        shell: bash
+        run: |
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "Slack alert not configured; skipping."
+            exit 0
+          fi
+          message="DNS check or Vercel production deploy failed for ${ALERT_DOMAIN}. Branch: ${GITHUB_REF_NAME}. Run: ${ALERT_RUN_URL}"
+          payload=$(jq -nc --arg text "$message" '{text: $text}')
+          curl --fail --silent --show-error -X POST \
+            -H 'Content-type: application/json' \
+            --data "$payload" \
+            "$SLACK_WEBHOOK_URL"
+
+      - name: Send email alert if configured
+        shell: bash
+        run: |
+          if [[ -z "$SMTP_HOST" || -z "$ALERT_FROM" || -z "$ALERT_TO" ]]; then
+            echo "Email alert not fully configured; skipping."
+            exit 0
+          fi
+          python3 - <<'PY'
+          import os, smtplib, ssl
+          from email.message import EmailMessage
+
+          msg = EmailMessage()
+          msg["Subject"] = f"GitHub Actions failure: {os.environ['ALERT_DOMAIN']} deploy"
+          msg["From"] = os.environ["ALERT_FROM"]
+          msg["To"] = os.environ["ALERT_TO"]
+          msg.set_content(
+              "The DNS check or Vercel production deployment failed.\n\n"
+              f"Domain: {os.environ['ALERT_DOMAIN']}\n"
+              f"Branch: {os.environ['GITHUB_REF_NAME']}\n"
+              f"Workflow run: {os.environ['ALERT_RUN_URL']}\n"
+          )
+          port = int(os.environ.get("SMTP_PORT") or "587")
+          with smtplib.SMTP(os.environ["SMTP_HOST"], port, timeout=20) as smtp:
+              smtp.starttls(context=ssl.create_default_context())
+              username = os.environ.get("SMTP_USER", "")
+              password = os.environ.get("SMTP_PASSWORD", "")
+              if username:
+                  smtp.login(username, password)
+              smtp.send_message(msg)
+          print("Email alert sent.")
+          PY
