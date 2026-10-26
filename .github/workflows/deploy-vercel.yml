@@ -52,17 +52,19 @@ jobs:
           node <<'NODE'
           const dns = require('node:dns').promises;
           const domain = process.env.DEPLOY_DOMAIN;
+          const expected = ['76.76.21.21'];
           const deadline = Date.now() + 30 * 60 * 1000;
           const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
           (async () => {
             while (Date.now() < deadline) {
               try {
-                const addresses = await dns.resolve4(domain);
-                if (addresses.length > 0) {
-                  console.log(`Root A record found for ${domain}: ${addresses.join(', ')}`);
+                const addresses = [...new Set(await dns.resolve4(domain))].sort();
+                if (JSON.stringify(addresses) === JSON.stringify(expected)) {
+                  console.log(`Exact root A-record set matched for ${domain}: ${addresses.join(', ')}`);
                   return;
                 }
+                console.log(`A records for ${domain} are [${addresses.join(', ')}]; expected exactly [${expected.join(', ')}]. Retrying in 60 seconds.`);
               } catch (error) {
                 if (!['ENODATA', 'ENOTFOUND', 'ESERVFAIL', 'ETIMEOUT', 'EREFUSED'].includes(error.code)) {
                   console.error(`Unexpected DNS lookup error: ${error.message}`);
@@ -72,7 +74,7 @@ jobs:
               }
               await sleep(60_000);
             }
-            console.error(`Timed out waiting for an A record for ${domain} after 30 minutes.`);
+            console.error(`Timed out waiting for ${domain} A records to equal exactly [${expected.join(', ')}] after 30 minutes.`);
             process.exit(1);
           })();
           NODE
