@@ -82,13 +82,44 @@ jobs:
         if: steps.source.outputs.has_project == 'true'
         run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
-  notify:
-    name: Notify on DNS or deployment failure
+  notify_slack:
+    name: Notify Slack on deployment failure
     needs: deploy
-    if: failure()
+    if: ${{ failure() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     env:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      ALERT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      ALERT_DOMAIN: ubertradies.online
+
+    steps:
+      - name: Send Slack alert if configured
+        shell: bash
+        run: |
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "::warning::Slack alert not configured; skipping."
+            exit 0
+          fi
+          message="DNS check or Vercel production deploy failed for ${ALERT_DOMAIN}. Branch: ${GITHUB_REF_NAME}. Run: ${ALERT_RUN_URL}"
+          payload=$(jq -nc --arg text "$message" '{text: $text}')
+          response=$(curl --fail --silent --show-error --max-time 15 -X POST \
+            -H 'Content-type: application/json' \
+            --data "$payload" \
+            "$SLACK_WEBHOOK_URL")
+          if [[ "$response" != "ok" ]]; then
+            echo "::error::Slack webhook returned an unexpected response."
+            exit 1
+          fi
+          echo "Slack accepted the failure alert." >> "$GITHUB_STEP_SUMMARY"
+
+  notify_email:
+    name: Notify email on deployment failure
+    needs: deploy
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
       SMTP_HOST: ${{ secrets.SMTP_HOST }}
       SMTP_PORT: ${{ secrets.SMTP_PORT }}
       SMTP_USER: ${{ secrets.SMTP_USER }}
@@ -99,26 +130,11 @@ jobs:
       ALERT_DOMAIN: ubertradies.online
 
     steps:
-      - name: Send Slack alert if configured
-        shell: bash
-        run: |
-          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
-            echo "Slack alert not configured; skipping."
-            exit 0
-          fi
-          message="DNS check or Vercel production deploy failed for ${ALERT_DOMAIN}. Branch: ${GITHUB_REF_NAME}. Run: ${ALERT_RUN_URL}"
-          payload=$(jq -nc --arg text "$message" '{text: $text}')
-          curl --fail --silent --show-error -X POST \
-            -H 'Content-type: application/json' \
-            --data "$payload" \
-            "$SLACK_WEBHOOK_URL"
-
       - name: Send email alert if configured
-        if: always()
         shell: bash
         run: |
           if [[ -z "$SMTP_HOST" || -z "$ALERT_FROM" || -z "$ALERT_TO" ]]; then
-            echo "Email alert not fully configured; skipping."
+            echo "::warning::Email alert not fully configured; skipping."
             exit 0
           fi
           python3 - <<'PY'
