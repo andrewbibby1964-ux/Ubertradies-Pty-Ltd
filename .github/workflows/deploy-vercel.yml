@@ -114,6 +114,7 @@ jobs:
             "$SLACK_WEBHOOK_URL"
 
       - name: Send email alert if configured
+        if: always()
         shell: bash
         run: |
           if [[ -z "$SMTP_HOST" || -z "$ALERT_FROM" || -z "$ALERT_TO" ]]; then
