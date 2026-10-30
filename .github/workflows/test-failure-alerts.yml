@@ -1,0 +1,114 @@
+name: Test failure alert isolation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deliberate_failure:
+    name: Simulate a failure before deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deliberately fail for notification testing
+        shell: bash
+        run: |
+          echo "Intentional test failure. No DNS check or deployment was run." >> "$GITHUB_STEP_SUMMARY"
+          echo "Triggering notification fan-out test."
+          exit 1
+
+  notify_slack:
+    name: Test Slack notification independently
+    needs: deliberate_failure
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      ALERT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      ALERT_DOMAIN: ubertradies.online
+    steps:
+      - name: Send Slack test alert
+        shell: bash
+        run: |
+          if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+            echo "::error::Missing repository secret SLACK_WEBHOOK_URL; Slack test was not sent."
+            exit 1
+          fi
+          message="TEST ONLY: Failure-isolation check for ${ALERT_DOMAIN}. No production deployment was attempted. Workflow run: ${ALERT_RUN_URL}"
+          payload=$(jq -nc --arg text "$message" '{text: $text}')
+          response=$(curl --fail --silent --show-error --max-time 15 -X POST \
+            -H 'Content-type: application/json' \
+            --data "$payload" \
+            "$SLACK_WEBHOOK_URL")
+          if [[ "$response" != "ok" ]]; then
+            echo "::error::Slack webhook returned an unexpected response."
+            exit 1
+          fi
+          echo "Slack accepted the test message." >> "$GITHUB_STEP_SUMMARY"
+
+  notify_email:
+    name: Test email notification independently
+    needs: deliberate_failure
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+      ALERT_FROM: ${{ secrets.ALERT_FROM }}
+      ALERT_TO: ${{ secrets.ALERT_TO }}
+      ALERT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      ALERT_DOMAIN: ubertradies.online
+    steps:
+      - name: Send email test alert
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import smtplib
+          import ssl
+          import sys
+          from email.message import EmailMessage
+
+          required = ["SMTP_HOST", "ALERT_FROM", "ALERT_TO"]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              print("::error::Missing required repository secrets: " + ", ".join(missing))
+              sys.exit(1)
+
+          username = os.environ.get("SMTP_USER", "")
+          password = os.environ.get("SMTP_PASSWORD", "")
+          if bool(username) != bool(password):
+              print("::error::Set both SMTP_USER and SMTP_PASSWORD, or leave both empty.")
+              sys.exit(1)
+
+          domain = os.environ["ALERT_DOMAIN"]
+          run_url = os.environ["ALERT_RUN_URL"]
+          msg = EmailMessage()
+          msg["Subject"] = f"TEST ONLY: Failure-alert isolation for {domain}"
+          msg["From"] = os.environ["ALERT_FROM"]
+          msg["To"] = os.environ["ALERT_TO"]
+          msg.set_content(
+              "This is a test of independent GitHub Actions failure notifications.\n"
+              "No DNS check or production deployment was run.\n\n"
+              f"Domain: {domain}\n"
+              f"Workflow run: {run_url}\n"
+          )
+
+          port = int(os.environ.get("SMTP_PORT") or "587")
+          with smtplib.SMTP(os.environ["SMTP_HOST"], port, timeout=20) as smtp:
+              smtp.ehlo()
+              smtp.starttls(context=ssl.create_default_context())
+              smtp.ehlo()
+              if username:
+                  smtp.login(username, password)
+              smtp.send_message(msg)
+
+          print("SMTP server accepted the test email.")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("SMTP server accepted the test email. Check the recipient inbox and spam folder.\n")
+          PY
