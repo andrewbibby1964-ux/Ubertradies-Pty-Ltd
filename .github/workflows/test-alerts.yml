@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Test Slack webhook
-        if: ${{ inputs.channel == 'slack' || inputs.channel == 'both' }}
+        if: ${{ always() && (inputs.channel == 'slack' || inputs.channel == 'both') }}
         shell: bash
         run: |
           if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
@@ -56,7 +56,7 @@ jobs:
           echo "Slack accepted the test message." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Test SMTP email
-        if: ${{ inputs.channel == 'email' || inputs.channel == 'both' }}
+        if: ${{ always() && (inputs.channel == 'email' || inputs.channel == 'both') }}
         shell: bash
         run: |
           python3 - <<'PY'
