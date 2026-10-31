@@ -1,9 +1,15 @@
-name: Deploy to Vercel after domain A record resolves
+name: Deploy to Vercel with DNS and HTTPS smoke tests
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      health_url:
+        description: Optional HTTPS JSON health endpoint returning {"status":"ok"}
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -12,26 +18,34 @@ concurrency:
   group: vercel-production
   cancel-in-progress: false
 
+env:
+  DEPLOY_DOMAIN: ubertradies.online
+  SITE_URL: https://ubertradies.online/
+  # Set this repository variable if the application exposes a JSON health route.
+  # Example: https://ubertradies.online/api/health
+  SITE_HEALTH_URL: ${{ vars.SITE_HEALTH_URL }}
+  VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
 jobs:
   deploy:
-    name: Wait for DNS and deploy production
+    name: Wait for DNS, deploy, and smoke-test production
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      DEPLOY_DOMAIN: ubertradies.online
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    timeout-minutes: 55
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Skip while the repository has no project source
+      - name: Detect project source
         id: source
         shell: bash
         run: |
-          if git ls-files | grep -Ev '^(\.github/|scripts/check_ubertradies_dns\.py$|README[^/]*$|LICENSE[^/]*$|\.gitignore$|\.gitattributes$|\.editorconfig$)' | grep -q .; then
+          set -Eeuo pipefail
+          if git ls-files \
+            | grep -Ev '^(.github/|scripts/check_ubertradies_dns\.py$|scripts/check_ubertradies_https\.py$|README[^/]*$|LICENSE[^/]*$|\.gitignore$|\.gitattributes$|\.editorconfig$)' \
+            | grep -q .; then
             echo "has_project=true" >> "$GITHUB_OUTPUT"
             echo "Project files found; continuing." >> "$GITHUB_STEP_SUMMARY"
           else
@@ -39,32 +53,50 @@ jobs:
             echo "No project source files are present yet; deployment skipped." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Set up Node.js
-        if: steps.source.outputs.has_project == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
       - name: Set up Python
         if: steps.source.outputs.has_project == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Wait for exact Vercel A record
+      - name: Set up Node.js
         if: steps.source.outputs.has_project == 'true'
-        run: python3 scripts/check_ubertradies_dns.py --watch --interval 60 --timeout 1800
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-      - name: Verify Vercel credentials are configured
+      - name: Verify required Vercel secrets
         if: steps.source.outputs.has_project == 'true'
         shell: bash
         run: |
+          set -Eeuo pipefail
           for key in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID; do
             if [[ -z "${!key}" ]]; then
               echo "::error::Missing required GitHub Actions secret: ${key}"
               exit 1
             fi
           done
+
+      - name: Verify smoke-test scripts are present
+        if: steps.source.outputs.has_project == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -f scripts/check_ubertradies_dns.py \
+            || { echo "::error::DNS checker script is missing"; exit 1; }
+          test -f scripts/check_ubertradies_https.py \
+            || { echo "::error::HTTPS smoke-test script is missing"; exit 1; }
+
+      - name: Wait for exact DNS propagation
+        if: steps.source.outputs.has_project == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 scripts/check_ubertradies_dns.py \
+            --watch \
+            --interval 60 \
+            --timeout 1800 \
+            --request-timeout 10
 
       - name: Install Vercel CLI
         if: steps.source.outputs.has_project == 'true'
@@ -82,8 +114,39 @@ jobs:
         if: steps.source.outputs.has_project == 'true'
         run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
+      - name: Smoke-test production HTTPS and site health
+        if: steps.source.outputs.has_project == 'true'
+        shell: bash
+        env:
+          HEALTH_URL_INPUT: ${{ inputs.health_url }}
+        run: |
+          set -Eeuo pipefail
+
+          health_url="${HEALTH_URL_INPUT:-}"
+          if [[ -z "$health_url" ]]; then
+            health_url="${SITE_HEALTH_URL:-}"
+          fi
+
+          args=(
+            --url "$SITE_URL"
+            --watch
+            --interval 30
+            --timeout 300
+            --request-timeout 20
+          )
+
+          if [[ -n "$health_url" ]]; then
+            args+=(--health-url "$health_url")
+            echo "Running homepage and JSON health-endpoint checks."
+          else
+            echo "No health URL configured; running HTTPS homepage smoke test only."
+          fi
+
+          python3 scripts/check_ubertradies_https.py "${args[@]}"
+          echo "Production DNS, HTTPS, and configured site-health checks passed." >> "$GITHUB_STEP_SUMMARY"
+
   notify_slack:
-    name: Notify Slack on deployment failure
+    name: Notify Slack on deployment or smoke-test failure
     needs: deploy
     if: ${{ failure() }}
     runs-on: ubuntu-latest
@@ -92,16 +155,16 @@ jobs:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       ALERT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       ALERT_DOMAIN: ubertradies.online
-
     steps:
       - name: Send Slack alert if configured
         shell: bash
         run: |
+          set -Eeuo pipefail
           if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
             echo "::warning::Slack alert not configured; skipping."
             exit 0
           fi
-          message="DNS check or Vercel production deploy failed for ${ALERT_DOMAIN}. Branch: ${GITHUB_REF_NAME}. Run: ${ALERT_RUN_URL}"
+          message="DNS, Vercel deployment, or HTTPS smoke test failed for ${ALERT_DOMAIN}. Branch: ${GITHUB_REF_NAME}. Run: ${ALERT_RUN_URL}"
           payload=$(jq -nc --arg text "$message" '{text: $text}')
           response=$(curl --fail --silent --show-error --max-time 15 -X POST \
             -H 'Content-type: application/json' \
@@ -114,7 +177,7 @@ jobs:
           echo "Slack accepted the failure alert." >> "$GITHUB_STEP_SUMMARY"
 
   notify_email:
-    name: Notify email on deployment failure
+    name: Notify email on deployment or smoke-test failure
     needs: deploy
     if: ${{ failure() }}
     runs-on: ubuntu-latest
@@ -128,17 +191,19 @@ jobs:
       ALERT_TO: ${{ secrets.ALERT_TO }}
       ALERT_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       ALERT_DOMAIN: ubertradies.online
-
     steps:
       - name: Send email alert if configured
         shell: bash
         run: |
+          set -Eeuo pipefail
           if [[ -z "$SMTP_HOST" || -z "$ALERT_FROM" || -z "$ALERT_TO" ]]; then
             echo "::warning::Email alert not fully configured; skipping."
             exit 0
           fi
           python3 - <<'PY'
-          import os, smtplib, ssl
+          import os
+          import smtplib
+          import ssl
           from email.message import EmailMessage
 
           msg = EmailMessage()
@@ -146,11 +211,12 @@ jobs:
           msg["From"] = os.environ["ALERT_FROM"]
           msg["To"] = os.environ["ALERT_TO"]
           msg.set_content(
-              "The DNS check or Vercel production deployment failed.\n\n"
+              "The DNS check, Vercel production deployment, or HTTPS smoke test failed.\n\n"
               f"Domain: {os.environ['ALERT_DOMAIN']}\n"
               f"Branch: {os.environ['GITHUB_REF_NAME']}\n"
               f"Workflow run: {os.environ['ALERT_RUN_URL']}\n"
           )
+
           port = int(os.environ.get("SMTP_PORT") or "587")
           with smtplib.SMTP(os.environ["SMTP_HOST"], port, timeout=20) as smtp:
               smtp.starttls(context=ssl.create_default_context())
