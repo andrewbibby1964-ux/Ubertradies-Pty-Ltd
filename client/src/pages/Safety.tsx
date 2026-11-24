@@ -1,0 +1,16 @@
+/* Design reminder: safety guidance pairs calm editorial imagery with high-contrast stop conditions and direct offline actions. */
+import PageIntro from "@/components/PageIntro";
+import { AlertOctagon, Check, ExternalLink, PhoneCall, ShieldCheck } from "lucide-react";
+
+const checks = ["Confirm who the other party is and who they represent.", "Check the real task, location, scope and authority required.", "Verify relevant licences, registrations, insurance and qualifications directly.", "Put scope, price, timing, changes and responsibilities in writing.", "Protect identity documents, health information, credentials and payment details.", "Stop if there is pressure, secrecy, impersonation or an unusual payment request."];
+
+export default function Safety() {
+  return (
+    <>
+      <PageIntro eyebrow="Safer participation guide" title="Check the real work, not just the profile." lead="This public guide offers practical prompts for customers, businesses, workers, learners and project teams. It is not verification, legal advice or an emergency service." aside={<div className="status-card"><span>Emergency</span><strong>Call 000</strong><p>For immediate danger in Australia</p></div>} />
+      <section className="safety-visual section-pad"><div><div className="safety-illustration" role="img" aria-label="Illustrative checklist for identity, authority, insurance, scope, privacy and stop conditions"><div className="safety-person left"><span /><i /></div><div className="check-board">{["Identity", "Authority", "Cover", "Scope", "Privacy", "Stop"].map((label, index) => <div key={label}><span>{String(index + 1).padStart(2, "0")}</span><strong>{label}</strong><Check /></div>)}</div><div className="safety-person right"><span /><i /></div></div><span className="image-caption">Illustrative checks · not a verification result</span></div><div><p className="eyebrow">Before relying on a connection</p><h2>Six checks worth slowing down for.</h2><ul className="check-list">{checks.map((check) => <li key={check}><Check />{check}</li>)}</ul></div></section>
+      <section className="stop-signs section-pad"><div className="stop-heading"><AlertOctagon /><div><p className="eyebrow light">Stop signs</p><h2>Pause when the story and the evidence do not match.</h2></div></div><div className="stop-grid"><p>Requests to pay immediately, move off-platform or use unusual payment methods.</p><p>Pressure to share identity, banking, health, access codes or private documents.</p><p>Claims of licensing, employment, authority or guaranteed work without direct evidence.</p><p>Work that appears unsafe, outside scope, improperly supervised or deliberately misdescribed.</p></div></section>
+      <section className="support-strip section-pad"><ShieldCheck /><div><strong>This site is not monitored for emergencies or active jobs.</strong><p>For public Australian consumer, workplace or cyber guidance, use the appropriate official service for your situation.</p></div><a className="button secondary" href="https://www.australia.gov.au/information-and-services/public-safety-and-law/emergency-services" target="_blank" rel="noreferrer">Australian emergency information <ExternalLink /></a></section>
+    </>
+  );
+}

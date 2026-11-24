@@ -19,6 +19,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
   DEPLOY_DOMAIN: ubertradies.online
   SITE_URL: https://ubertradies.online/
   # Set this repository variable if the application exposes a JSON health route.

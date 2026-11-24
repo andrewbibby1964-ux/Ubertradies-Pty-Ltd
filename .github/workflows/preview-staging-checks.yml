@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
 concurrency:
   group: preview-staging-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
