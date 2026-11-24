@@ -30,4 +30,23 @@ No secrets are required to build or run the site. Optional analytics loads only 
 | `deploy-vercel.yml` | Pushes to `main`, manual run | **Yes — Vercel production** |
 | `test-alerts.yml`, `test-failure-alerts.yml` | Manual only | No |
 
-Merging into `main` starts a production deployment. Before that, confirm the production domain. The deploy workflow and the scripts in `scripts/` currently check `ubertradies.online`, while the site's canonical address and sitemap use `ubertradies.au`.
+Merging into `main` starts a production deployment.
+
+## Production domain
+
+Vercel hosts production at **`https://ubertradies.online/`**. The canonical link, Open Graph URL, `robots.txt` and `sitemap.xml` all use that address, and `vercel.json` permanently redirects `www.ubertradies.online` to the apex.
+
+Before the first production deploy:
+
+1. Add `ubertradies.online` and `www.ubertradies.online` to the Vercel project (Settings → Domains).
+2. At the domain registrar, set the records Vercel shows. Typically that is an apex `A` record of `76.76.21.21` and a `www` `CNAME` to `cname.vercel-dns.com`. Remove the old redirect to the Manus site.
+3. If Vercel shows different A records, set the repository variable `VERCEL_EXPECTED_A` (space-separated IPs) so the DNS check matches.
+4. Confirm the `VERCEL_TOKEN`, `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` secrets exist.
+
+The deploy workflow waits up to 30 minutes for the apex A records to match exactly, deploys, then requires the homepage to load over HTTPS on `ubertradies.online` or `www.ubertradies.online` and contain this site's canonical link. A redirect to any other host, including the former Manus deployment, fails the check.
+
+```bash
+python3 scripts/check_ubertradies_dns.py                     # one-shot DNS check
+python3 scripts/check_ubertradies_dns.py --expected-a 1.2.3.4 # custom Vercel IP
+python3 scripts/check_ubertradies_https.py                   # one-shot HTTPS check
+```

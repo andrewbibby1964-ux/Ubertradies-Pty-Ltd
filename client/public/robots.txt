@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://ubertradies.au/sitemap.xml
+Sitemap: https://ubertradies.online/sitemap.xml

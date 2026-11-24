@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Smoke-test ubertradies.online over HTTPS.
+Vercel hosts production at ubertradies.online (apex), with www redirected to
+the apex. The homepage must finish on one of those hosts and contain the
+expected page marker, so the old Manus deployment can no longer pass.
 
 One-shot homepage check:
     python3 check_ubertradies_https.py
@@ -27,13 +30,16 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 DEFAULT_URL = "https://ubertradies.online/"
-# The custom domain currently redirects to this exact Manus deployment alias.
-# Keep this allowlist explicit; do not allow arbitrary *.manus.space hosts.
+# Vercel production hosts only. Keep this allowlist explicit; redirects to any
+# other host (including the former Manus deployment) fail the check.
 DEFAULT_HOSTS = {
     "ubertradies.online",
     "www.ubertradies.online",
-    "ubertradies-pcrm9hzf.manus.space",
 }
+# Text that must appear in the homepage HTML. This is the canonical link from
+# client/index.html, so only this repository's build passes (not a parked page
+# or the former Manus site).
+DEFAULT_EXPECT_TEXT = '<link rel="canonical" href="https://ubertradies.online/"'
 USER_AGENT = "ubertradies-https-smoke-test/1.0"
 
 
@@ -57,7 +63,9 @@ def read_response(response: HTTPResponse, max_bytes: int = 1_000_000) -> bytes:
     return response.read(max_bytes + 1)
 
 
-def check_homepage(url: str, expected_hosts: set[str], timeout: float) -> CheckResult:
+def check_homepage(
+    url: str, expected_hosts: set[str], timeout: float, expect_text: str | None = None
+) -> CheckResult:
     request = Request(
         url,
         headers={"accept": "text/html,application/xhtml+xml", "user-agent": USER_AGENT},
@@ -82,10 +90,12 @@ def check_homepage(url: str, expected_hosts: set[str], timeout: float) -> CheckR
         return CheckResult(False, f"homepage returned HTTP {status}")
     if not body:
         return CheckResult(False, "homepage returned an empty response body")
+    if expect_text and expect_text not in body.decode("utf-8", errors="replace"):
+        return CheckResult(False, f"homepage did not contain expected text: {expect_text!r}")
 
     return CheckResult(
         True,
-        f"homepage passed: HTTP {status}, HTTPS, host {final_host}, "
+        f"homepage passed: HTTP {status}, HTTPS, host {final_host}, site marker found, "
         f"{len(body)} response bytes",
     )
 
@@ -125,8 +135,14 @@ def check_health(url: str, expected_hosts: set[str], timeout: float) -> CheckRes
     return CheckResult(True, f"health endpoint passed: HTTP {status}, status=ok")
 
 
-def check_once(url: str, health_url: str | None, expected_hosts: set[str], timeout: float) -> bool:
-    homepage = check_homepage(url, expected_hosts, timeout)
+def check_once(
+    url: str,
+    health_url: str | None,
+    expected_hosts: set[str],
+    timeout: float,
+    expect_text: str | None = None,
+) -> bool:
+    homepage = check_homepage(url, expected_hosts, timeout, expect_text)
     if homepage.ok:
         print(f"[{timestamp()}] PASS: {homepage.message}")
     else:
@@ -149,6 +165,7 @@ def main() -> int:
     parser.add_argument("--url", default=DEFAULT_URL, help=f"homepage URL (default: {DEFAULT_URL})")
     parser.add_argument("--health-url", help="optional HTTPS JSON health URL; must return {\"status\": \"ok\"}")
     parser.add_argument("--expected-host", action="append", dest="expected_hosts", help="allowed final hostname; may be repeated")
+    parser.add_argument("--expect-text", default=DEFAULT_EXPECT_TEXT, help=f"text the homepage HTML must contain; pass an empty string to skip (default: {DEFAULT_EXPECT_TEXT!r})")
     parser.add_argument("--watch", action="store_true", help="poll until checks pass or the timeout expires")
     parser.add_argument("--interval", type=float, default=30, help="seconds between checks in watch mode (default: 30)")
     parser.add_argument("--timeout", type=float, default=300, help="maximum watch duration in seconds (default: 300 / 5 minutes)")
@@ -167,11 +184,11 @@ def main() -> int:
         parser.error("interval, timeout, and request-timeout must be positive")
 
     if not args.watch:
-        return 0 if check_once(args.url, args.health_url, expected_hosts, args.request_timeout) else 1
+        return 0 if check_once(args.url, args.health_url, expected_hosts, args.request_timeout, args.expect_text or None) else 1
 
     deadline = time.monotonic() + args.timeout
     while True:
-        if check_once(args.url, args.health_url, expected_hosts, args.request_timeout):
+        if check_once(args.url, args.health_url, expected_hosts, args.request_timeout, args.expect_text or None):
             return 0
         remaining = deadline - time.monotonic()
         if remaining <= 0:
