@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Check ubertradies.online's apex A records against Vercel's expected IP.
+Vercel hosts production. If the Vercel dashboard shows different A records for
+the project, pass them with --expected-a (repeatable) instead of editing code.
 
 One-shot check:
     python3 check_ubertradies_dns.py
@@ -27,9 +29,9 @@ EXPECTED_A = {"76.76.21.21"}
 DNS_GOOGLE_URL = "https://dns.google/resolve"
 
 
-def query_a_records(timeout: float) -> tuple[set[str], int]:
+def query_a_records(domain: str, timeout: float) -> tuple[set[str], int]:
     """Return (IPv4 answer set, DNS response status) via Google's DoH API."""
-    query = urlencode({"name": DOMAIN, "type": "A"})
+    query = urlencode({"name": domain, "type": "A"})
     request = Request(
         f"{DNS_GOOGLE_URL}?{query}",
         headers={
@@ -53,21 +55,21 @@ def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def check_once(timeout: float) -> bool:
+def check_once(domain: str, expected: set[str], timeout: float) -> bool:
     try:
-        actual, dns_status = query_a_records(timeout)
+        actual, dns_status = query_a_records(domain, timeout)
     except (URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         print(f"[{timestamp()}] DNS lookup failed: {exc}", file=sys.stderr)
         return False
 
     actual_text = ", ".join(sorted(actual)) if actual else "(no A records)"
-    expected_text = ", ".join(sorted(EXPECTED_A))
-    if actual == EXPECTED_A:
-        print(f"[{timestamp()}] PASS: {DOMAIN} A records exactly match {expected_text}.")
+    expected_text = ", ".join(sorted(expected))
+    if actual == expected:
+        print(f"[{timestamp()}] PASS: {domain} A records exactly match {expected_text}.")
         return True
 
     print(
-        f"[{timestamp()}] MISMATCH: {DOMAIN} A records are {actual_text}; "
+        f"[{timestamp()}] MISMATCH: {domain} A records are {actual_text}; "
         f"expected exactly {expected_text} (DNS status {dns_status}).",
         file=sys.stderr,
     )
@@ -76,6 +78,17 @@ def check_once(timeout: float) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--domain",
+        default=DOMAIN,
+        help=f"apex domain to check (default: {DOMAIN})",
+    )
+    parser.add_argument(
+        "--expected-a",
+        action="append",
+        dest="expected_a",
+        help=f"expected A record; may be repeated (default: {', '.join(sorted(EXPECTED_A))})",
+    )
     parser.add_argument(
         "--watch",
         action="store_true",
@@ -104,18 +117,21 @@ def main() -> int:
     if args.interval <= 0 or args.timeout <= 0 or args.request_timeout <= 0:
         parser.error("interval, timeout, and request-timeout must be positive")
 
+    domain = args.domain.strip().lower().rstrip(".")
+    expected = set(args.expected_a or EXPECTED_A)
+
     if not args.watch:
-        return 0 if check_once(args.request_timeout) else 1
+        return 0 if check_once(domain, expected, args.request_timeout) else 1
 
     deadline = time.monotonic() + args.timeout
     while True:
-        if check_once(args.request_timeout):
+        if check_once(domain, expected, args.request_timeout):
             return 0
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             print(
                 f"[{timestamp()}] Timed out after {args.timeout:g}s waiting for "
-                f"{DOMAIN} A records to equal {', '.join(sorted(EXPECTED_A))}.",
+                f"{domain} A records to equal {', '.join(sorted(expected))}.",
                 file=sys.stderr,
             )
             return 1

@@ -19,8 +19,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  # Production is hosted on Vercel at the apex domain; www redirects to it.
   DEPLOY_DOMAIN: ubertradies.online
   SITE_URL: https://ubertradies.online/
+  # Optional repository variable: space-separated A records from the Vercel
+  # dashboard if they differ from the default 76.76.21.21.
+  VERCEL_EXPECTED_A: ${{ vars.VERCEL_EXPECTED_A }}
   # Set this repository variable if the application exposes a JSON health route.
   # Example: https://ubertradies.online/api/health
   SITE_HEALTH_URL: ${{ vars.SITE_HEALTH_URL }}
@@ -92,11 +97,17 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 scripts/check_ubertradies_dns.py \
-            --watch \
-            --interval 60 \
-            --timeout 1800 \
+          args=(
+            --domain "$DEPLOY_DOMAIN"
+            --watch
+            --interval 60
+            --timeout 1800
             --request-timeout 10
+          )
+          for ip in ${VERCEL_EXPECTED_A:-}; do
+            args+=(--expected-a "$ip")
+          done
+          python3 scripts/check_ubertradies_dns.py "${args[@]}"
 
       - name: Install Vercel CLI
         if: steps.source.outputs.has_project == 'true'

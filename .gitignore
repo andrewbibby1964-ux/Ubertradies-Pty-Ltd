@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.vercel/
+*.tsbuildinfo
+
+# Local environment and secret files
+.env
+.env.local
+.env.*.local
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and Manus-only files
+*.log
+.manus-logs/
+.project-config.json
+client/public/__manus__/
+
+# Python
+__pycache__/
+*.pyc

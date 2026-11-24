@@ -1,0 +1,83 @@
+name: Preview and Staging Checks
+
+on:
+  pull_request:
+    branches: [main, staging]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [staging]
+
+permissions:
+  contents: read
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+concurrency:
+  group: preview-staging-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate PR or staging branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source without persisting credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check smoke-test script syntax
+        shell: bash
+        run: python -m py_compile scripts/check_ubertradies_dns.py scripts/check_ubertradies_https.py
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies and build application when present
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! -f package.json ]]; then
+            echo "No package.json found; application build check is skipped until app source is added."
+            echo "No package.json found; application build was skipped. Vercel Preview deployments require the Vercel GitHub integration to be enabled." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          node -e 'if (!require("./package.json").scripts?.build) { console.error("package.json must define a build script"); process.exit(1); }'
+
+          if [[ -f pnpm-lock.yaml ]]; then
+            corepack enable
+            pnpm install --frozen-lockfile
+            pnpm run build
+          elif [[ -f yarn.lock ]]; then
+            corepack enable
+            yarn install --frozen-lockfile
+            yarn build
+          elif [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then
+            npm ci
+            npm run build
+          else
+            echo "::error::No supported lockfile found. Commit pnpm-lock.yaml, yarn.lock, package-lock.json, or npm-shrinkwrap.json."
+            exit 1
+          fi
+
+          echo "Application dependency installation and production build passed." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain Vercel Preview and staging setup
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Vercel Preview / staging"
+            echo "This workflow intentionally has no Vercel token or deployment secrets. Enable the repository in Vercel's Git integration to create Preview deployments for pull requests. Configure the Vercel production branch as main, and map the staging branch to the Preview environment/staging domain. Keep production credentials out of Preview environment variables."
+          } >> "$GITHUB_STEP_SUMMARY"
